@@ -38,3 +38,6 @@ config/local.tfvars
 *.tfstate
 .terraform.lock.hcl
 .DS_Store
+
+# Local fork of containerd (see scripts/setup-patched-containerd.sh)
+/deps/containerd/

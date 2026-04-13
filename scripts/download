@@ -25,7 +25,18 @@ mkdir -p ${DATA_DIR}
 case ${OS} in
   linux)
     git clone --single-branch --branch=${VERSION_RUNC} --depth=1 https://github.com/opencontainers/runc ${RUNC_DIR}
-    curl --compressed -sfL https://github.com/k3s-io/k3s-root/releases/download/${VERSION_ROOT}/k3s-root-${ARCH}.tar | tar xf -
+    K3S_ROOT_TAR="${DATA_DIR}/k3s-root-${ARCH}.tar"
+    curl --compressed -sfL "https://github.com/k3s-io/k3s-root/releases/download/${VERSION_ROOT}/k3s-root-${ARCH}.tar" -o "${K3S_ROOT_TAR}"
+    if ! tar -tf "${K3S_ROOT_TAR}" >/dev/null 2>&1; then
+      echo "[ERROR] k3s-root bundle is not a valid tar archive (downloaded $(wc -c <"${K3S_ROOT_TAR}") bytes)." >&2
+      echo "[ERROR] This often happens when an HTTP(S) proxy returns HTML or an error page instead of the release asset." >&2
+      echo "[ERROR] Adjust the proxy or download path so curl receives the real tarball (see first bytes below)." >&2
+      head -c 400 "${K3S_ROOT_TAR}" | tr -d '\0' | head -c 400 >&2 || true
+      echo >&2
+      exit 1
+    fi
+    tar xf "${K3S_ROOT_TAR}"
+    rm -f "${K3S_ROOT_TAR}"
     ;;
   windows)
     git clone --single-branch --branch=${VERSION_HCSSHIM} --depth=1 https://github.com/microsoft/hcsshim ${HCSSHIM_DIR}
@@ -36,7 +47,13 @@ case ${OS} in
     ;;
 esac
 
-git clone --single-branch --branch=${VERSION_CONTAINERD} --depth=1 https://${PKG_CONTAINERD_K3S/\/v*/} ${CONTAINERD_DIR}
+if [[ "${PKG_CONTAINERD_K3S}" == *github.com* ]]; then
+  git clone --single-branch --branch=${VERSION_CONTAINERD} --depth=1 "https://${PKG_CONTAINERD_K3S/\/v*/}" "${CONTAINERD_DIR}"
+else
+  # go.mod replace points at a local path (e.g. ./deps/containerd), not a git remote
+  mkdir -p "$(dirname "${CONTAINERD_DIR}")"
+  cp -a "${PKG_CONTAINERD_K3S#./}" "${CONTAINERD_DIR}"
+fi
 
 for CHART_FILE in $(grep -rlF HelmChart manifests/ | xargs yq eval --no-doc .spec.chart | xargs -n1 basename); do
   CHART_NAME=$(echo $CHART_FILE | grep -oE '^(-*[a-z])+')

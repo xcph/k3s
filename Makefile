@@ -64,6 +64,9 @@ local-binary:
 		--build-arg="GOCOVER=$(GOCOVER)" \
 		--build-arg="GOOS=$(GOOS)" \
 		--build-arg="DEBUG=$(DEBUG)" \
+		--build-arg="HTTP_PROXY=$(HTTP_PROXY)" \
+		--build-arg="HTTPS_PROXY=$(HTTPS_PROXY)" \
+		--build-arg="NO_PROXY=$(NO_PROXY)" \
 		-f Dockerfile.local --target=result --output=. .
 
 .PHONY: local-image

@@ -35,12 +35,23 @@ ARG TREE_STATE
 ARG COMMIT
 ARG DIRTY
 ARG GOOS
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
 ENV NO_DAPPER=true
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY}
 # Used by both build and validate stages, better caching if we do this in a separate stage
 COPY ./scripts/ ./scripts
 COPY ./go.mod ./go.sum ./main.go ./
 COPY ./manifests ./manifests
+COPY ./patches ./patches
 RUN mkdir -p bin dist
+# go.mod may replace containerd with ./deps/containerd; that tree is not in the default COPY set above.
+RUN if grep -q 'github.com/containerd/containerd/v2 => ./deps/containerd' go.mod; then \
+      ./scripts/setup-patched-containerd.sh; \
+    fi
 RUN --mount=type=cache,id=gomod,target=/go/pkg/mod \
     ./scripts/download
 

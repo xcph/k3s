@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	containerd "github.com/containerd/containerd/v2/client"
@@ -79,6 +80,13 @@ func Run(ctx context.Context, cfg *config.Node) error {
 	}
 
 	go func() {
+		// Pin to one OS thread for the lifetime of the embedded containerd child process.
+		// Linux PR_SET_PDEATHSIG (set via SysProcAttr.Pdeathsig) is evaluated against the
+		// thread that performed the fork/clone; keeping this goroutine on a fixed thread
+		// avoids rare cases where thread teardown could interact badly with Pdeathsig.
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
 		env := []string{}
 		cenv := []string{}
 
@@ -110,6 +118,12 @@ func Run(ctx context.Context, cfg *config.Node) error {
 		addDeathSig(cmd)
 		err := cmd.Run()
 		if err != nil && !errors.Is(err, context.Canceled) {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				logrus.Errorf("embedded containerd exited: waitStatus=%s err=%v", exitErr.String(), err)
+			} else {
+				logrus.Errorf("embedded containerd exited: err=%v", err)
+			}
 			signals.RequestShutdown(errors.WithMessage(err, "containerd exited"))
 		}
 		signals.RequestShutdown(nil)

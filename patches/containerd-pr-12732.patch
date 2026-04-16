@@ -70,7 +70,7 @@ index 6fc72da6b..4c6c78680 100644
  // WithWindowsCPUCount sets the `Windows.Resources.CPU.Count` section to the
  // `count` specified. It is a no-op for non-Windows specs.
  func WithWindowsCPUCount(count uint64) SpecOpts {
-@@ -1789,3 +1816,55 @@ func WithWindowsNetworkNamespace(ns string) SpecOpts {
+@@ -1789,3 +1816,88 @@ func WithWindowsNetworkNamespace(ns string) SpecOpts {
  		return nil
  	}
  }
@@ -82,47 +82,80 @@ index 6fc72da6b..4c6c78680 100644
 +	ReadLink(name string) (string, error)
 +}
 +
++const maxUserFileSymlinkDepth = 32
++
 +// openUserFile attempts to open a file within the root fs.
 +// It handles cases where the file is an absolute symlink (e.g., NixOS /etc/passwd -> /nix/store/...),
 +// which triggers "path escapes from parent" errors in Go 1.24+ due to stricter os.DirFS validation.
 +func openUserFile(root fs.FS, name string) (fs.File, error) {
-+	f, err := root.Open(name)
++	seen := map[string]struct{}{}
++	return openUserFileResolved(root, name, 0, seen)
++}
++
++func openUserFileResolved(root fs.FS, name string, depth int, seen map[string]struct{}) (fs.File, error) {
++	if depth > maxUserFileSymlinkDepth {
++		return nil, fmt.Errorf("max symlink depth exceeded while resolving %q", name)
++	}
++
++	cleanName := filepath.ToSlash(filepath.Clean(name))
++	cleanName = strings.TrimPrefix(cleanName, "/")
++
++	f, err := root.Open(cleanName)
 +	if err == nil {
 +		return f, nil
 +	}
 +
-+	// 兼容 AOSP  etc --> /system/etc 的场景
++	var resolver func(string) (string, bool)
 +	if lfs, ok := root.(fs.ReadLinkFS); ok {
-+		paths := strings.Split(name, string(os.PathSeparator))
-+		for idx, path := range paths {
-+			lpath, err := lfs.ReadLink(path)
-+			if err == nil {
-+				return openUserFile(root, strings.TrimPrefix(filepath.Join(lpath, strings.Join(paths[idx+1:],
-+					string(os.PathSeparator))), string(os.PathSeparator)))
-+			}
++		resolver = func(p string) (string, bool) {
++			target, lerr := lfs.ReadLink(p)
++			return target, lerr == nil
++		}
++	} else if lfs, ok := root.(readLinker); ok {
++		resolver = func(p string) (string, bool) {
++			target, lerr := lfs.ReadLink(p)
++			return target, lerr == nil
 +		}
 +	}
-+
-+	// Check if the FS implements our local ReadLink interface.
-+	// We use a local interface instead of fs.ReadLinkFS to avoid strict dependency
-+	// issues in some build environments.
-+	if lfs, ok := root.(readLinker); ok {
-+		if target, lerr := lfs.ReadLink(name); lerr == nil {
-+			// Use filepath.IsAbs to handle platform-agnostic absolute path checks
-+			if filepath.IsAbs(target) {
-+				// Re-anchor the absolute path to the root.
-+				// e.g. /nix/store/... becomes nix/store/... (relative to root fs)
-+				// We use filepath.Rel to safely strip the leading separator.
-+				rel, rerr := filepath.Rel(string(filepath.Separator), target)
-+				if rerr == nil {
-+					// filepath.Rel might return OS-specific separators (backslashes on Windows).
-+					// fs.Open strictly expects forward slashes, so we convert it.
-+					return root.Open(filepath.ToSlash(rel))
-+				}
-+			}
-+		}
++	if resolver == nil {
++		return nil, err
 +	}
 +
-+	// Return the original error if we couldn't resolve it
++	parts := strings.Split(cleanName, "/")
++	prefix := ""
++	for i := 0; i < len(parts); i++ {
++		if i == 0 {
++			prefix = parts[i]
++		} else {
++			prefix = filepath.ToSlash(filepath.Join(prefix, parts[i]))
++		}
++
++		target, ok := resolver(prefix)
++		if !ok {
++			continue
++		}
++
++		rest := ""
++		if i+1 < len(parts) {
++			rest = filepath.ToSlash(filepath.Join(parts[i+1:]...))
++		}
++
++		resolved := filepath.ToSlash(target)
++		if !filepath.IsAbs(resolved) {
++			resolved = filepath.ToSlash(filepath.Join(filepath.Dir(prefix), resolved))
++		}
++		resolved = strings.TrimPrefix(filepath.ToSlash(filepath.Clean(resolved)), "/")
++		if rest != "" {
++			resolved = filepath.ToSlash(filepath.Join(resolved, rest))
++		}
++		resolved = filepath.ToSlash(filepath.Clean(resolved))
++
++		if _, exists := seen[resolved]; exists {
++			return nil, fmt.Errorf("symlink loop detected while resolving %q", cleanName)
++		}
++		seen[resolved] = struct{}{}
++		return openUserFileResolved(root, resolved, depth+1, seen)
++	}
++
 +	return nil, err
 +}
